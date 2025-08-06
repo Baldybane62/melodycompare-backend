@@ -1,34 +1,32 @@
 {
   "name": "melodycompare-backend",
   "version": "1.0.0",
-  "description": "MelodyCompare Backend API Server",
+  "description": "Backend server for MelodyCompare to securely proxy requests to Google Gemini API.",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "multer": "^1.4.5-lts.1",
-    "acrcloud": "^1.4.0",
-    "fluent-ffmpeg": "^2.1.2",
-    "@google/genai": "latest",
-    "crypto": "^1.0.1"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "build": "vite build",
+    "postinstall": "npm run build"
   },
   "keywords": [
-    "music",
-    "copyright",
-    "analysis",
-    "ai",
-    "api"
+    "gemini",
+    "express",
+    "backend"
   ],
-  "author": "MelodyCompare",
-  "license": "MIT"
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/genai": "^0.11.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "form-data": "^4.0.0",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.13"
+  }
 }
-
