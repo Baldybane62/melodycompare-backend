@@ -11,7 +11,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold } from '@google/genai';
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 8080;
 
 console.log("Starting MelodyCompare backend server...");
 
