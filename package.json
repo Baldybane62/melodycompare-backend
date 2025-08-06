@@ -1,14 +1,13 @@
 {
   "name": "melodycompare-backend",
   "version": "1.0.0",
-  "description": "Backend server for MelodyCompare to securely proxy requests to Google Gemini API.",
+  "description": "Backend server for MelodyCompare.",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js"
   },
   "keywords": [
-    "gemini",
     "express",
     "backend"
   ],
