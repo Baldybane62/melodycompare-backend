@@ -388,7 +388,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Analysis endpoint - scan against public database
-app.post('/api/analyze', upload.single('audio'), async (req, res) => {
+app.post('/api/analyze', upload.single('audioFile'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No audio file provided' });
