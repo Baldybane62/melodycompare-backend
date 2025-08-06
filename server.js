@@ -29,7 +29,6 @@ const audioStore = new Map();
 // --- Middleware ---
 const allowedOrigins = [
     'https://melodycompare.com',
-    'https://www.melodycompare.com',
     /http:\/\/(localhost|127\.0\.0\.1):\d+/ // Allow localhost & 127.0.0.1 for development
 ];
 app.use(cors({
