@@ -32,7 +32,11 @@ const allowedOrigins = [
     'https://www.melodycompare.com',
     /http:\/\/(localhost|127\.0\.0\.1):\d+/ // Allow localhost & 127.0.0.1 for development
 ];
-app.use(cors({ origin: allowedOrigins }));
+app.use(cors({
+    origin: allowedOrigins,
+    methods: ['GET', 'POST', 'OPTIONS'], // Explicitly allow POST and OPTIONS
+    allowedHeaders: ['Content-Type', 'Authorization'] // Allow common headers
+}));
 app.use(express.json({ limit: '10mb' }));
 
 const storage = multer.memoryStorage();
