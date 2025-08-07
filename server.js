@@ -4,14 +4,12 @@ import 'dotenv/config'; // To load .env variables
 import multer from 'multer';
 import crypto from 'crypto';
 import path from 'path';
-import fs from 'fs';
 import { fileURLToPath } from 'url';
-import acrcloud from 'acrcloud';
-import ffmpeg from 'fluent-ffmpeg';
+import FormData from 'form-data';
 import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold } from '@google/genai';
 
 const app = express();
-const port = process.env.PORT || 8080;
+const port = process.env.PORT || 3001;
 
 console.log("Starting MelodyCompare backend server...");
 
@@ -26,20 +24,18 @@ const sharedAnalyses = new Map();
 const catalogEntries = new Map();
 const audioStore = new Map();
 
+
 // --- Middleware ---
 const allowedOrigins = [
     'https://melodycompare.com',
+    'https://www.melodycompare.com',
     /http:\/\/(localhost|127\.0\.0\.1):\d+/ // Allow localhost & 127.0.0.1 for development
 ];
-app.use(cors({
-    origin: allowedOrigins,
-    methods: ['GET', 'POST', 'OPTIONS'], // Explicitly allow POST and OPTIONS
-    allowedHeaders: ['Content-Type', 'Authorization'] // Allow common headers
-}));
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json({ limit: '10mb' }));
 
 const storage = multer.memoryStorage();
-const upload = multer({ storage: storage, limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ storage: storage, limits: { fileSize: 20 * 1024 * 1024 } }); // 20MB limit
 
 // For live analysis, ACRCloud credentials are required
 const useLiveAnalysis = process.env.ACR_HOST && process.env.ACR_ACCESS_KEY && process.env.ACR_ACCESS_SECRET;
@@ -47,21 +43,6 @@ if (useLiveAnalysis) {
     console.log("ACRCloud credentials found. Live analysis enabled.");
 } else {
     console.warn("ACRCloud credentials not found in .env file. Falling back to simulated analysis.");
-}
-
-// Initialize ACRCloud with credentials (only if available)
-let acr = null;
-if (useLiveAnalysis) {
-    try {
-        acr = new acrcloud({
-            host: process.env.ACR_HOST?.trim(),
-            access_key: process.env.ACR_ACCESS_KEY?.trim(),
-            access_secret: process.env.ACR_ACCESS_SECRET?.trim()
-        });
-        console.log("ACRCloud package initialized successfully.");
-    } catch (error) {
-        console.error("Failed to initialize ACRCloud package:", error);
-    }
 }
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -103,66 +84,6 @@ const getSystemInstructionForContext = (context) => {
 };
 
 /**
- * Trims audio buffer to first 15 seconds to meet ACRCloud file size requirements
- * @param {Buffer} audioBuffer - The original audio file buffer
- * @param {string} mimetype - The MIME type of the audio file
- * @returns {Promise<Buffer>} A Promise that resolves to the trimmed audio buffer
- */
-const trimAudioBuffer = (audioBuffer, mimetype) => {
-    return new Promise((resolve, reject) => {
-        const timestamp = Date.now();
-        const extension = mimetype.includes('mp3') ? 'mp3' : 'wav';
-        const tempInput = `/tmp/input_${timestamp}.${extension}`;
-        const tempOutput = `/tmp/output_${timestamp}.wav`;
-        
-        try {
-            console.log(`Trimming audio file to 15 seconds (original size: ${audioBuffer.length} bytes)`);
-            
-            // Write buffer to temp file
-            fs.writeFileSync(tempInput, audioBuffer);
-            
-            // Trim to first 15 seconds and convert to WAV (always available)
-            ffmpeg(tempInput)
-                .setStartTime(0)
-                .setDuration(15)
-                .audioCodec('pcm_s16le') // WAV format, always available on all systems
-                .audioFrequency(22050)   // Lower sample rate for smaller file size
-                .output(tempOutput)
-                .on('end', () => {
-                    try {
-                        const trimmedBuffer = fs.readFileSync(tempOutput);
-                        console.log(`Audio trimmed successfully (new size: ${trimmedBuffer.length} bytes)`);
-                        
-                        // Clean up temp files
-                        fs.unlinkSync(tempInput);
-                        fs.unlinkSync(tempOutput);
-                        
-                        resolve(trimmedBuffer);
-                    } catch (error) {
-                        console.error('Error reading trimmed audio file:', error);
-                        reject(error);
-                    }
-                })
-                .on('error', (error) => {
-                    console.error('FFmpeg error:', error);
-                    // Clean up temp files on error
-                    try {
-                        if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
-                        if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
-                    } catch (cleanupError) {
-                        console.error('Error cleaning up temp files:', cleanupError);
-                    }
-                    reject(error);
-                })
-                .run();
-        } catch (error) {
-            console.error('Error in trimAudioBuffer:', error);
-            reject(error);
-        }
-    });
-};
-
-/**
  * Creates a "No Match Found" analysis data object for a clean result.
  * @returns {object} An AnalysisData object representing no matches.
  */
@@ -192,6 +113,7 @@ const createNoMatchResult = () => ({
         similarity: Math.floor(Math.random() * 20),
     })),
 });
+
 
 /**
  * Transforms the response from ACRCloud into our app's AnalysisData format.
@@ -248,30 +170,39 @@ const transformAcrResponseToAnalysisData = (acrResponse) => {
     };
 };
 
+
 /**
- * Performs a live audio fingerprinting scan using ACRCloud package with audio trimming.
+ * Performs a live audio fingerprinting scan using ACRCloud.
  * @param {Buffer} audioBuffer - The audio file data.
- * @param {string} mimetype - The MIME type of the audio file.
  * @returns {Promise<object>} A Promise that resolves to the AnalysisData object.
  */
-const runLiveFingerprinting = async (audioBuffer, mimetype) => {
-    if (!acr) {
-        throw new Error("ACRCloud package is not initialized. Check your credentials.");
+const runLiveFingerprinting = async (audioBuffer) => {
+    const { ACR_HOST, ACR_ACCESS_KEY, ACR_ACCESS_SECRET } = process.env;
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const stringToSign = `POST\n/v1/identify\n${ACR_ACCESS_KEY}\naudio\n1\n${timestamp}`;
+    const signature = crypto.createHmac('sha1', ACR_ACCESS_SECRET).update(stringToSign).digest('base64');
+
+    const formData = new FormData();
+    formData.append('sample', audioBuffer, { filename: 'track.mp3', contentType: 'audio/mp3' });
+    formData.append('access_key', ACR_ACCESS_KEY);
+    formData.append('data_type', 'audio');
+    formData.append('signature_version', '1');
+    formData.append('signature', signature);
+    formData.append('timestamp', timestamp);
+    
+    const response = await fetch(`https://${ACR_HOST}/v1/identify`, {
+        method: 'POST',
+        body: formData,
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`ACRCloud API HTTP Error: ${response.status} ${errorText}`);
     }
 
-    console.log("Processing with ACRCloud package...");
-    
-    try {
-        // Trim audio to 15 seconds to meet ACRCloud file size requirements
-        const trimmedBuffer = await trimAudioBuffer(audioBuffer, mimetype);
-        
-        // Use ACRCloud package to identify the trimmed audio
-        const metadata = await acr.identify(trimmedBuffer);
-        return transformAcrResponseToAnalysisData(metadata);
-    } catch (error) {
-        console.error("ACRCloud package error:", error);
-        throw error;
-    }
+    const acrResponse = await response.json();
+    return transformAcrResponseToAnalysisData(acrResponse);
 };
 
 const runSimulatedFingerprinting = () => {
@@ -340,273 +271,364 @@ const runSimulatedComparison = (copyrightedSongName) => {
 const generateInitialReport = async (analysisData, analysisType = 'database', copyrightedSongName = '') => {
     const contextPreamble = analysisType === 'comparison'
         ? `A musician has received the following analysis comparing their AI-generated song to a specific track they uploaded, named "${copyrightedSongName}".`
-        : 'A musician has received the following analysis of their AI-generated song against a public database of copyrighted music.';
+        : 'A musician has received the following analysis comparing their AI-generated song to tracks in a public database.';
 
-    const prompt = `${contextPreamble}
+    const prompt = `
+You are an expert Music Licensing Advisor. ${contextPreamble}
 
 Analysis Data:
+\`\`\`json
 ${JSON.stringify(analysisData, null, 2)}
+\`\`\`
 
-Please provide a comprehensive, professional report that includes:
+Your task is to provide a detailed, encouraging, and actionable report in Markdown format. The report MUST include the following sections in this exact order:
 
-1. **Executive Summary** (2-3 sentences): Overall assessment and key takeaway
-2. **Risk Assessment**: Detailed explanation of the risk level and what it means
-3. **Key Findings**: Most important discoveries from the analysis
-4. **Recommendations**: Specific, actionable advice for the musician
-5. **Next Steps**: What the musician should do based on these results
+1.  A main title for the report, using a single '#' in Markdown (e.g., # Your Song Analysis Report).
+2.  A subtitle "Understanding Your Risk Score" using '##'. Explain the 'Overall Risk' score and 'Risk Level' in plain, easy-to-understand English. Avoid overly technical jargon.
+3.  A subtitle "Actionable Next Steps" using '##'. Provide a clear, numbered list of concrete steps the musician should take next.
+4.  A subtitle "Creative Tune-Up Suggestions" using '##'. Give creative, specific ideas on how to modify the song to reduce similarity. Focus on musical elements like melody, rhythm, and instrumentation, referencing the high-similarity areas from the stem analysis (vocals and drums).
+5.  A subtitle "A Final Note of Encouragement" using '##'. End with a positive and encouraging paragraph. Reassure the musician that this is a common part of the creative process and they have a clear path forward.
 
-Write in a professional but encouraging tone. Be specific about the data but avoid legal advice. Focus on practical guidance for creators.`;
+Format your entire response strictly in Markdown. Do not include any other text, greetings, or explanations before or after the Markdown report.
+    `;
+    
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config: { safetySettings }
+    });
+    
+    return response.text;
+};
 
-    try {
-        if (!process.env.API_KEY) {
-            return "AI analysis is currently unavailable. Please check your API configuration.";
-        }
-
-        const genAI = ai.getGenerativeModel({ 
-            model: model,
-            safetySettings: safetySettings
-        });
-        
-        const result = await genAI.generateContent(prompt);
-        const response = await result.response;
-        return response.text();
-    } catch (error) {
-        console.error('Error generating initial report:', error);
-        return "Unable to generate AI analysis at this time. Please try again later.";
-    }
+const handleApiError = (res, error, context) => {
+    console.error(`Error in ${context}:`, error);
+    res.status(500).json({ error: `Failed to ${context}. Please check the server logs.` });
 };
 
 // --- API Routes ---
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        status: 'healthy', 
-        timestamp: new Date().toISOString(),
-        services: {
-            acrcloud: useLiveAnalysis ? 'enabled' : 'simulated',
-            ai: process.env.API_KEY ? 'enabled' : 'disabled'
-        }
-    });
-});
+const apiRouter = express.Router();
 
-// Analysis endpoint - scan against public database
-app.post('/api/analyze', upload.single('audioFile'), async (req, res) => {
+apiRouter.post('/analyze', upload.single('audioFile'), async (req, res) => {
     try {
         if (!req.file) {
-            return res.status(400).json({ error: 'No audio file provided' });
+            return res.status(400).json({ error: 'No audio file was uploaded.' });
         }
-
-        console.log(`Received audio file: ${req.file.originalname} (${req.file.size} bytes)`);
+        console.log(`Received file for DB scan: ${req.file.originalname}, Size: ${req.file.size} bytes`);
 
         let analysisData;
-        
         if (useLiveAnalysis) {
-            try {
-                analysisData = await runLiveFingerprinting(req.file.buffer, req.file.mimetype);
-            } catch (error) {
-                console.error("Live analysis failed, falling back to simulation:", error);
-                analysisData = runSimulatedFingerprinting();
-            }
+            console.log("Processing with live ACRCloud analysis...");
+            analysisData = await runLiveFingerprinting(req.file.buffer);
         } else {
+            console.log("Processing with simulated database analysis...");
             analysisData = runSimulatedFingerprinting();
         }
 
-        // Generate AI report
-        const aiReport = await generateInitialReport(analysisData, 'database');
-        analysisData.aiReport = aiReport;
-
-        // Store analysis with unique ID
-        const analysisId = crypto.randomUUID();
-        sharedAnalyses.set(analysisId, {
-            ...analysisData,
-            filename: req.file.originalname,
-            timestamp: new Date().toISOString(),
-            type: 'database'
-        });
-
-        res.json({
-            analysisId,
-            ...analysisData
-        });
+        const reportText = await generateInitialReport(analysisData, 'database');
+        res.json({ analysisData, reportText });
 
     } catch (error) {
-        console.error('Analysis error:', error);
-        res.status(500).json({ error: 'Analysis failed', details: error.message });
+        handleApiError(res, error, 'perform analysis and generate report');
     }
 });
 
-// Comparison endpoint - compare two specific songs
-app.post('/api/compare', upload.fields([
+apiRouter.post('/compare', upload.fields([
     { name: 'aiSong', maxCount: 1 },
     { name: 'copyrightedSong', maxCount: 1 }
 ]), async (req, res) => {
     try {
-        if (!req.files?.aiSong?.[0] || !req.files?.copyrightedSong?.[0]) {
-            return res.status(400).json({ error: 'Both AI song and copyrighted song files are required' });
+        const aiSongFile = req.files?.aiSong?.[0];
+        const copyrightedSongFile = req.files?.copyrightedSong?.[0];
+
+        if (!aiSongFile || !copyrightedSongFile) {
+            return res.status(400).json({ error: 'Both an AI song and a copyrighted song must be uploaded.' });
         }
-
-        const aiSongFile = req.files.aiSong[0];
-        const copyrightedSongFile = req.files.copyrightedSong[0];
-
-        console.log(`Comparing: ${aiSongFile.originalname} vs ${copyrightedSongFile.originalname}`);
-
-        // For now, we'll use simulated comparison
-        // In the future, this could do actual audio comparison
+        
+        console.log(`Received files for comparison: ${aiSongFile.originalname} vs ${copyrightedSongFile.originalname}`);
+        
+        console.log("Processing with simulated comparison...");
         const analysisData = runSimulatedComparison(copyrightedSongFile.originalname);
+        
+        const reportText = await generateInitialReport(analysisData, 'comparison', copyrightedSongFile.originalname);
+        res.json({ analysisData, reportText });
 
-        // Generate AI report for comparison
-        const aiReport = await generateInitialReport(analysisData, 'comparison', copyrightedSongFile.originalname);
-        analysisData.aiReport = aiReport;
+    } catch (error) {
+        handleApiError(res, error, 'perform song comparison');
+    }
+});
 
-        // Store analysis with unique ID
-        const analysisId = crypto.randomUUID();
-        sharedAnalyses.set(analysisId, {
-            ...analysisData,
-            aiSongFilename: aiSongFile.originalname,
-            copyrightedSongFilename: copyrightedSongFile.originalname,
-            timestamp: new Date().toISOString(),
-            type: 'comparison'
+apiRouter.post('/share', (req, res) => {
+    try {
+        const { analysisData, reportText } = req.body;
+        if (!analysisData || !reportText) {
+            return res.status(400).json({ error: 'Analysis data and report text are required to create a shareable link.' });
+        }
+        const id = crypto.randomBytes(6).toString('hex');
+        sharedAnalyses.set(id, { analysisData, reportText });
+        console.log(`Created shareable link with id: ${id}`);
+        setTimeout(() => {
+            sharedAnalyses.delete(id);
+            console.log(`Expired and deleted shared analysis: ${id}`);
+        }, 24 * 60 * 60 * 1000); 
+
+        res.status(201).json({ id });
+    } catch (error) {
+        handleApiError(res, error, 'create share link');
+    }
+});
+
+apiRouter.post('/analysis-audio/:id', upload.single('audioFile'), (req, res) => {
+    try {
+        const { id } = req.params;
+        const audioFile = req.file;
+
+        if (!audioFile) {
+            return res.status(400).json({ error: 'No audio file was uploaded.' });
+        }
+        if (!id) {
+            return res.status(400).json({ error: 'An analysis ID is required.' });
+        }
+        
+        audioStore.set(id, { buffer: audioFile.buffer, mimetype: audioFile.mimetype });
+        console.log(`Stored audio for analysis ID: ${id}`);
+        
+        res.status(204).send();
+
+    } catch (error) {
+        handleApiError(res, error, 'store analysis audio');
+    }
+});
+
+apiRouter.get('/analysis/:id', (req, res) => {
+    try {
+        const { id } = req.params;
+        const data = sharedAnalyses.get(id);
+
+        if (data) {
+            console.log(`Retrieved shared analysis: ${id}`);
+            res.json(data);
+        } else {
+            res.status(404).json({ error: 'Shared analysis not found. It may have expired.' });
+        }
+    } catch (error) {
+        handleApiError(res, error, 'retrieve shared analysis');
+    }
+});
+
+apiRouter.post('/generate-report', async (req, res) => {
+    try {
+        const { analysisData } = req.body;
+        if (!analysisData) {
+            return res.status(400).json({ error: 'analysisData is required.' });
+        }
+        const reportText = await generateInitialReport(analysisData, 'database');
+        res.json({ reportText });
+
+    } catch (error) {
+        handleApiError(res, error, 'generate initial report');
+    }
+});
+
+apiRouter.post('/assistant-chat', async (req, res) => {
+    try {
+        const { history, message, context } = req.body;
+        if (!history || !message || !context) {
+            return res.status(400).json({ error: 'History, message, and context are required.' });
+        }
+        
+        const systemInstruction = getSystemInstructionForContext(context);
+
+        const geminiHistory = history.map(msg => ({
+            role: msg.role === 'model' ? 'model' : 'user',
+            parts: [{ text: msg.content }],
+        }));
+        
+        const chat = ai.chats.create({ 
+            model, 
+            history: geminiHistory, 
+            config: { 
+                systemInstruction: { role: 'system', parts: [{ text: systemInstruction }] },
+                safetySettings 
+            }
         });
+        const stream = await chat.sendMessageStream({ message });
 
-        res.json({
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        
+        for await (const chunk of stream) {
+            res.write(chunk.text);
+        }
+        res.end();
+
+    } catch (error) {
+        handleApiError(res, error, 'process assistant chat stream');
+    }
+});
+
+apiRouter.post('/brainstorm', async (req, res) => {
+    try {
+        const { analysisData, mode, theme } = req.body;
+
+        const getBrainstormingPrompt = (data, mode, theme) => {
+            const highSimilarityStems = Object.entries(data.stemAnalysis)
+                .filter(([, value]) => value.similarity > 50)
+                .map(([key]) => key);
+            
+            const context = `The user's song has a ${data.overview.riskLevel} risk of copyright issues. The overall similarity is ${data.overview.overallScore}%. The most similar parts are: ${highSimilarityStems.join(', ') || 'N/A'}. The AI platform used was likely ${data.aiAnalysis.platform}.`;
+            let instruction = '';
+            switch (mode) {
+                case 'titles': instruction = `Generate 5 creative and unique alternative song titles.`; break;
+                case 'lyrics': instruction = `Generate 3 short, distinct lyrical concepts (2-3 lines each) that could fit a new direction for the song.`; break;
+                case 'chords': instruction = `Suggest 3 alternative chord progressions that could replace a high-similarity section. Provide them in a standard format (e.g., C - G - Am - F).`; break;
+            }
+            const themeInstruction = theme ? ` The user wants the ideas to fit a theme of "${theme}".` : '';
+            return `You are a creative songwriting partner. Based on the following musical analysis, ${instruction}${themeInstruction}\n\nAnalysis Context:\n${context}`;
+        };
+
+        const prompt = getBrainstormingPrompt(analysisData, mode, theme);
+        const response = await ai.models.generateContent({
+            model: model,
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'A list of creative ideas.' },
+                safetySettings,
+            },
+        });
+        
+        res.json(JSON.parse(response.text.trim()));
+
+    } catch (error) {
+        handleApiError(res, error, 'generate brainstorming ideas');
+    }
+});
+
+apiRouter.post('/enhance-prompt', async (req, res) => {
+    try {
+        const { basePrompt } = req.body;
+        if (!basePrompt) {
+            return res.status(400).json({ error: 'basePrompt is required' });
+        }
+        
+        const systemPrompt = `You are an expert AI music prompt engineer. Your task is to take a user's basic idea and expand it into a rich, detailed, and effective prompt for an AI music generator like Suno or Udio. 
+        - Use descriptive adjectives and evocative language.
+        - Structure the prompt clearly, often using comma-separated tags or descriptive phrases.
+        - Specify instrumentation, mood, genre, and vocal style if mentioned.
+        - Maintain the core creative intent of the user's input.
+        - Return ONLY the enhanced prompt, without any explanations, greetings, or extra text.`;
+
+        const response = await ai.models.generateContent({
+            model: model,
+            contents: basePrompt,
+            config: { systemInstruction: systemPrompt, safetySettings },
+        });
+        
+        res.json({ enhancedPrompt: response.text });
+
+    } catch (error) {
+        handleApiError(res, error, 'enhance music prompt');
+    }
+});
+
+apiRouter.post('/feedback', (req, res) => {
+    try {
+        const { type, message, email } = req.body;
+
+        if (!type || !message) {
+            return res.status(400).json({ error: 'Feedback type and message are required.' });
+        }
+        
+        console.log("--- NEW USER FEEDBACK ---");
+        console.log(`Type: ${type}`);
+        console.log(`From: ${email || 'Anonymous'}`);
+        console.log(`Message: ${message}`);
+        console.log("-------------------------");
+
+        res.status(204).send();
+
+    } catch (error) {
+        handleApiError(res, error, 'process feedback');
+    }
+});
+
+apiRouter.post('/catalog/submit', upload.single('audioFile'), (req, res) => {
+    try {
+        const { title, genre, tags, analysisId, riskScore, userId, userName } = req.body;
+        const audioFile = req.file;
+
+        if (!title || !genre || !tags || !analysisId || !riskScore || !userId || !userName || !audioFile) {
+            return res.status(400).json({ error: 'Missing required fields for catalog submission.' });
+        }
+
+        const id = crypto.randomUUID();
+        const newEntry = {
+            id,
             analysisId,
-            ...analysisData
-        });
+            userId,
+            userName,
+            title,
+            genre,
+            tags: tags.split(',').map(t => t.trim()),
+            dateSubmitted: new Date().toISOString(),
+            riskScore: Number(riskScore),
+        };
+        
+        // Use the catalog item's ID for the audio key to ensure uniqueness
+        catalogEntries.set(id, newEntry);
+        audioStore.set(id, { buffer: audioFile.buffer, mimetype: audioFile.mimetype });
+        
+        console.log(`New track submitted to catalog: "${title}" (ID: ${id})`);
+
+        res.status(201).json(newEntry);
 
     } catch (error) {
-        console.error('Comparison error:', error);
-        res.status(500).json({ error: 'Comparison failed', details: error.message });
+        handleApiError(res, error, 'submit to catalog');
     }
 });
 
-// Get analysis by ID
-app.get('/api/analysis/:id', (req, res) => {
-    const analysis = sharedAnalyses.get(req.params.id);
-    if (!analysis) {
-        return res.status(404).json({ error: 'Analysis not found' });
-    }
-    res.json(analysis);
-});
-
-// Get user's analysis library (simplified - in production would be user-specific)
-app.get('/api/library', (req, res) => {
-    const analyses = Array.from(sharedAnalyses.entries()).map(([id, data]) => ({
-        id,
-        filename: data.filename || data.aiSongFilename,
-        timestamp: data.timestamp,
-        type: data.type,
-        riskLevel: data.overview.riskLevel,
-        similarity: data.overview.similarity
-    }));
-    
-    res.json(analyses.slice(-20)); // Return last 20 analyses
-});
-
-// Chat endpoint for AI assistant
-app.post('/api/chat', async (req, res) => {
+apiRouter.get('/catalog/entries', (req, res) => {
     try {
-        const { message, context } = req.body;
-
-        if (!message) {
-            return res.status(400).json({ error: 'Message is required' });
-        }
-
-        if (!process.env.API_KEY) {
-            return res.status(503).json({ error: 'AI service is currently unavailable' });
-        }
-
-        const systemInstruction = getSystemInstructionForContext(context || {});
-        
-        const genAI = ai.getGenerativeModel({ 
-            model: model,
-            safetySettings: safetySettings,
-            systemInstruction: systemInstruction
-        });
-
-        const result = await genAI.generateContent(message);
-        const response = await result.response;
-        
-        res.json({ response: response.text() });
-
+        const entries = Array.from(catalogEntries.values()).sort((a,b) => new Date(b.dateSubmitted).getTime() - new Date(a.dateSubmitted).getTime());
+        res.json(entries);
     } catch (error) {
-        console.error('Chat error:', error);
-        res.status(500).json({ error: 'Chat failed', details: error.message });
+        handleApiError(res, error, 'get catalog entries');
     }
 });
 
-// Prompt enhancement endpoint
-app.post('/api/enhance-prompt', async (req, res) => {
+apiRouter.get('/audio/:id', (req, res) => {
     try {
-        const { genre, mood, instruments, lyrical } = req.body;
+        const { id } = req.params;
+        const audio = audioStore.get(id);
 
-        if (!process.env.API_KEY) {
-            return res.status(503).json({ error: 'AI service is currently unavailable' });
+        if (audio) {
+            res.setHeader('Content-Type', audio.mimetype);
+            res.setHeader('Content-Length', audio.buffer.length);
+            res.send(audio.buffer);
+        } else {
+            res.status(404).json({ error: 'Audio file not found.' });
         }
-
-        const userPrompt = `Genre: ${genre || 'Not specified'}
-Mood: ${mood || 'Not specified'}
-Instruments: ${instruments || 'Not specified'}
-Lyrical Theme: ${lyrical || 'Not specified'}`;
-
-        const enhancementPrompt = `You are an expert at crafting prompts for AI music generation tools like Suno and Udio. 
-
-The user has provided these basic elements for their music prompt:
-${userPrompt}
-
-Please enhance this into a detailed, effective prompt that will generate better results. Include:
-- Specific musical elements and production details
-- Atmospheric and emotional descriptors
-- Technical aspects that AI music generators respond well to
-- Keep it concise but descriptive (2-3 sentences max)
-
-Return only the enhanced prompt, nothing else.`;
-
-        const genAI = ai.getGenerativeModel({ 
-            model: model,
-            safetySettings: safetySettings
-        });
-
-        const result = await genAI.generateContent(enhancementPrompt);
-        const response = await result.response;
-        
-        res.json({ enhancedPrompt: response.text() });
-
     } catch (error) {
-        console.error('Prompt enhancement error:', error);
-        res.status(500).json({ error: 'Prompt enhancement failed', details: error.message });
+        handleApiError(res, error, 'retrieve audio file');
     }
 });
 
-// Catalog endpoint (placeholder)
-app.get('/api/catalog', (req, res) => {
-    // This would connect to a real database in production
-    const sampleCatalog = [
-        {
-            id: '1',
-            title: 'Ambient Waves',
-            artist: 'Digital Dreams',
-            genre: 'Ambient',
-            riskScore: 5,
-            price: 29.99
-        },
-        {
-            id: '2', 
-            title: 'Lo-Fi Sunset',
-            artist: 'Chill Collective',
-            genre: 'Lo-Fi Hip Hop',
-            riskScore: 8,
-            price: 19.99
-        }
-    ];
-    
-    res.json(sampleCatalog);
+app.use('/api', apiRouter);
+
+// --- Static File Serving & SPA Fallback ---
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Serve static files from the 'dist' folder (production build)
+app.use(express.static(path.join(__dirname, 'dist')));
+
+// All non-API GET requests not handled by the static server should serve the SPA.
+// This prevents API 404s from being served the index.html page.
+app.get(/^(?!\/api).*/, (req, res) => {
+    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-// Start server
-app.listen(port, '0.0.0.0', () => {
-    console.log(`🎵 MelodyCompare backend server running on port ${port}`);
-    console.log(`🔗 Health check: http://localhost:${port}/api/health`);
-    console.log(`🎯 CORS enabled for: ${allowedOrigins.join(', ')}`);
+app.listen(port, () => {
+    console.log(`MelodyCompare backend server is running on http://localhost:${port}`);
 });
-
