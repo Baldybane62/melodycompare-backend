@@ -184,16 +184,17 @@ const runLiveFingerprinting = async (audioBuffer) => {
     const signature = crypto.createHmac('sha1', ACR_ACCESS_SECRET).update(stringToSign).digest('base64');
 
     const formData = new FormData();
-    formData.append('sample', audioBuffer, { filename: 'track.mp3', contentType: 'audio/mp3' });
+    formData.append('sample', audioBuffer, { filename: 'track.mp3' });
     formData.append('access_key', ACR_ACCESS_KEY);
     formData.append('data_type', 'audio');
     formData.append('signature_version', '1');
     formData.append('signature', signature);
     formData.append('timestamp', timestamp);
-    
+
     const response = await fetch(`https://${ACR_HOST}/v1/identify`, {
         method: 'POST',
         body: formData,
+        headers: formData.getHeaders( ), // This is the key change
     });
 
     if (!response.ok) {
