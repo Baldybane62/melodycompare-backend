@@ -614,21 +614,24 @@ apiRouter.get('/audio/:id', (req, res) => {
     }
 });
 
+
+// ** NEW SERVER STRUCTURE **
+
+// 1. Handle API routes FIRST.
 app.use('/api', apiRouter);
 
-// --- Static File Serving & SPA Fallback ---
+// 2. Serve static files from the 'dist' folder.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Serve static files from the 'dist' folder (production build)
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// All non-API GET requests not handled by the static server should serve the SPA.
-// This prevents API 404s from being served the index.html page.
+// 3. For any other GET request that is not an API route, serve the SPA.
+// This is the fallback for client-side routing.
 app.get(/^(?!\/api).*/, (req, res) => {
     res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
+// --- Server Startup ---
 app.listen(port, () => {
     console.log(`MelodyCompare backend server is running on http://localhost:${port}`);
 });
