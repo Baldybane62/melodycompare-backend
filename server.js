@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import 'dotenv/config'; // To load .env variables
@@ -32,20 +31,7 @@ const allowedOrigins = [
     'https://www.melodycompare.com',
     /http:\/\/(localhost|127\.0\.0\.1):\d+/ // Allow localhost & 127.0.0.1 for development
 ];
-
-// Explicit CORS configuration for robustness behind a proxy
-const corsOptions = {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Explicitly allow methods
-    allowedHeaders: ['Content-Type', 'Authorization'], // Allow common headers
-};
-
-// 1. Handle pre-flight requests for all routes. This is crucial for proxies.
-app.options('*', cors(corsOptions));
-
-// 2. Enable CORS for all other requests with the new options
-app.use(cors(corsOptions));
-
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json({ limit: '10mb' }));
 
 const storage = multer.memoryStorage();
@@ -628,24 +614,22 @@ apiRouter.get('/audio/:id', (req, res) => {
     }
 });
 
-
-// ** NEW SERVER STRUCTURE **
-
-// 1. Handle API routes FIRST.
 app.use('/api', apiRouter);
 
-// 2. Serve static files from the 'dist' folder.
+// --- Static File Serving & SPA Fallback ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Serve static files from the 'dist' folder (production build)
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// 3. For any other GET request that is not an API route, serve the SPA.
-// This is the fallback for client-side routing.
+// SPA fallback: for any request that doesn't match a static file or an API route,
+// serve the index.html file. This allows client-side routing to take over.
+// The regex negative lookahead `(?!\/api)` ensures this does not match API calls.
 app.get(/^(?!\/api).*/, (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-// --- Server Startup ---
 app.listen(port, () => {
     console.log(`MelodyCompare backend server is running on http://localhost:${port}`);
 });
