@@ -617,20 +617,6 @@ apiRouter.get('/audio/:id', (req, res) => {
 
 app.use('/api', apiRouter);
 
-// --- Static File Serving & SPA Fallback ---
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Serve static files from the 'dist' folder (production build)
-app.use(express.static(path.join(__dirname, 'dist')));
-
-// SPA fallback: for any request that doesn't match a static file or an API route,
-// serve the index.html file. This allows client-side routing to take over.
-// The regex negative lookahead `(?!\/api)` ensures this does not match API calls.
-app.get(/^(?!\/api).*/, (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-});
-
 app.listen(port, () => {
     console.log(`MelodyCompare backend server is running on http://localhost:${port}`);
 });
