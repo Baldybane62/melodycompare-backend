@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import 'dotenv/config'; // To load .env variables
@@ -31,7 +32,20 @@ const allowedOrigins = [
     'https://www.melodycompare.com',
     /http:\/\/(localhost|127\.0\.0\.1):\d+/ // Allow localhost & 127.0.0.1 for development
 ];
-app.use(cors({ origin: allowedOrigins }));
+
+// Explicit CORS configuration for robustness behind a proxy
+const corsOptions = {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Explicitly allow methods
+    allowedHeaders: ['Content-Type', 'Authorization'], // Allow common headers
+};
+
+// 1. Handle pre-flight requests for all routes. This is crucial for proxies.
+app.options('*', cors(corsOptions));
+
+// 2. Enable CORS for all other requests with the new options
+app.use(cors(corsOptions));
+
 app.use(express.json({ limit: '10mb' }));
 
 const storage = multer.memoryStorage();
